@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from email.message import EmailMessage
 import os
 import smtplib
+import threading
 
 
 st.set_page_config(page_title="台股分析與寄送小幫手", layout="wide")
@@ -41,6 +42,33 @@ SYSTEM_PROMPT = """
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 GEMINI_TIMEOUT_SECONDS = 20
+
+
+def generate_content_with_timeout(model_name, prompt, timeout_seconds):
+    result = {"response": None, "error": None}
+
+    def worker():
+        try:
+            model = genai.GenerativeModel(model_name)
+            result["response"] = model.generate_content(
+                prompt,
+                request_options={"timeout": timeout_seconds},
+            )
+        except Exception as e:
+            result["error"] = e
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+
+    if thread.is_alive():
+        raise TimeoutError(f"{model_name} 超過 {timeout_seconds} 秒沒有回應")
+    if result["error"] is not None:
+        raise result["error"]
+    if result["response"] is None:
+        raise RuntimeError(f"{model_name} 沒有回傳內容")
+
+    return result["response"]
 
 
 @st.cache_data(ttl=600)
@@ -143,11 +171,13 @@ if st.button("生成分析報告"):
             with st.spinner("正在生成分析報告，請稍候..."):
                 for model_name in GEMINI_MODELS:
                     try:
-                        model = genai.GenerativeModel(model_name)
-                        response = model.generate_content(
+                        response = generate_content_with_timeout(
+                            model_name,
                             f"{SYSTEM_PROMPT}\n\n{st.session_state.stock_price_text}",
-                            request_options={"timeout": GEMINI_TIMEOUT_SECONDS},
+                            GEMINI_TIMEOUT_SECONDS,
                         )
+                        if not getattr(response, "text", "").strip():
+                            raise RuntimeError("Gemini 回傳空白內容")
                         break
                     except Exception as e:
                         errors.append(f"{model_name}: {e}")
