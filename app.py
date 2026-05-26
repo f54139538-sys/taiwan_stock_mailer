@@ -50,13 +50,16 @@ def get_secret(name):
     except Exception:
         value = None
 
-    return (value or os.getenv(name) or "").strip()
+    return str(value or os.getenv(name) or "").strip().strip('"').strip("'")
 
 
 def generate_report_text(api_key, model_name, prompt, timeout_seconds):
+    if not api_key.startswith("AIza") or any(ord(ch) > 127 for ch in api_key):
+        raise RuntimeError("GEMINI_API_KEY 格式不正確，請確認 secrets 或 .env 是否填入真正的 API key")
+
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_name}:generateContent?key={api_key}"
+        f"{model_name}:generateContent"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -66,7 +69,10 @@ def generate_report_text(api_key, model_name, prompt, timeout_seconds):
     req = request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
         method="POST",
     )
 
