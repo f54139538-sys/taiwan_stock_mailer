@@ -1,11 +1,11 @@
 import streamlit as st
 import yfinance as yf
-import google.generativeai as genai
 from dotenv import load_dotenv
 from email.message import EmailMessage
+import json
 import os
 import smtplib
-import threading
+from urllib import error, request
 
 
 st.set_page_config(page_title="台股分析與寄送小幫手", layout="wide")
@@ -44,31 +44,52 @@ GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"
 GEMINI_TIMEOUT_SECONDS = 20
 
 
-def generate_content_with_timeout(model_name, prompt, timeout_seconds):
-    result = {"response": None, "error": None}
+def get_secret(name):
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
 
-    def worker():
-        try:
-            model = genai.GenerativeModel(model_name)
-            result["response"] = model.generate_content(
-                prompt,
-                request_options={"timeout": timeout_seconds},
-            )
-        except Exception as e:
-            result["error"] = e
+    return (value or os.getenv(name) or "").strip()
 
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    thread.join(timeout_seconds)
 
-    if thread.is_alive():
-        raise TimeoutError(f"{model_name} 超過 {timeout_seconds} 秒沒有回應")
-    if result["error"] is not None:
-        raise result["error"]
-    if result["response"] is None:
-        raise RuntimeError(f"{model_name} 沒有回傳內容")
+def generate_report_text(api_key, model_name, prompt, timeout_seconds):
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model_name}:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 700},
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
-    return result["response"]
+    try:
+        with request.urlopen(req, timeout=timeout_seconds) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP {e.code}: {detail[:300]}") from e
+    except error.URLError as e:
+        raise RuntimeError(f"連線失敗：{e.reason}") from e
+    except TimeoutError as e:
+        raise TimeoutError(f"{model_name} 超過 {timeout_seconds} 秒沒有回應") from e
+
+    try:
+        text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Gemini 回傳格式不符合預期：{body}") from e
+
+    if not text:
+        raise RuntimeError("Gemini 回傳空白內容")
+
+    return text
 
 
 @st.cache_data(ttl=600)
@@ -99,8 +120,8 @@ def get_tw_stock_data(code):
 
 
 def send_email(to_email, subject, body):
-    gmail_user = (os.getenv("GMAIL_USER") or "").strip()
-    gmail_password = (os.getenv("GMAIL_APP_PASSWORD") or "").replace(" ", "").strip()
+    gmail_user = get_secret("GMAIL_USER")
+    gmail_password = get_secret("GMAIL_APP_PASSWORD").replace(" ", "")
 
     if not gmail_user or not gmail_password:
         return False, "找不到 GMAIL_USER 或 GMAIL_APP_PASSWORD，請先設定 .env 檔案"
@@ -156,7 +177,7 @@ if st.button("查詢當日股價"):
 st.header("分析區")
 
 if st.button("生成分析報告"):
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY")
 
     if not api_key:
         st.error("找不到 GEMINI_API_KEY，請先設定 .env 檔案")
@@ -164,29 +185,27 @@ if st.button("生成分析報告"):
         st.warning("請先查詢當日股價")
     else:
         try:
-            genai.configure(api_key=api_key)
-            response = None
+            report_text = None
             errors = []
 
             with st.spinner("正在生成分析報告，請稍候..."):
                 for model_name in GEMINI_MODELS:
                     try:
-                        response = generate_content_with_timeout(
+                        report_text = generate_report_text(
+                            api_key,
                             model_name,
                             f"{SYSTEM_PROMPT}\n\n{st.session_state.stock_price_text}",
                             GEMINI_TIMEOUT_SECONDS,
                         )
-                        if not getattr(response, "text", "").strip():
-                            raise RuntimeError("Gemini 回傳空白內容")
                         break
                     except Exception as e:
                         errors.append(f"{model_name}: {e}")
 
-            if response is None:
+            if report_text is None:
                 raise RuntimeError("目前設定的 Gemini 模型都無法使用：" + " | ".join(errors))
 
-            st.session_state.report = response.text
-            st.session_state.email_body = response.text
+            st.session_state.report = report_text
+            st.session_state.email_body = report_text
         except Exception as e:
             st.error(f"生成分析報告失敗：{e}")
 
