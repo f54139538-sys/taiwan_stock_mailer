@@ -40,6 +40,7 @@ SYSTEM_PROMPT = """
 """
 
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+GEMINI_TIMEOUT_SECONDS = 20
 
 
 @st.cache_data(ttl=600)
@@ -137,19 +138,22 @@ if st.button("生成分析報告"):
         try:
             genai.configure(api_key=api_key)
             response = None
+            errors = []
 
-            for model_name in GEMINI_MODELS:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(
-                        f"{SYSTEM_PROMPT}\n\n{st.session_state.stock_price_text}"
-                    )
-                    break
-                except Exception:
-                    continue
+            with st.spinner("正在生成分析報告，請稍候..."):
+                for model_name in GEMINI_MODELS:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        response = model.generate_content(
+                            f"{SYSTEM_PROMPT}\n\n{st.session_state.stock_price_text}",
+                            request_options={"timeout": GEMINI_TIMEOUT_SECONDS},
+                        )
+                        break
+                    except Exception as e:
+                        errors.append(f"{model_name}: {e}")
 
             if response is None:
-                raise RuntimeError("目前設定的 Gemini 模型都無法使用")
+                raise RuntimeError("目前設定的 Gemini 模型都無法使用：" + " | ".join(errors))
 
             st.session_state.report = response.text
             st.session_state.email_body = response.text
