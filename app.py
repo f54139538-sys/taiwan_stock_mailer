@@ -9,7 +9,8 @@ from urllib import error, request
 
 
 st.set_page_config(page_title="台股分析與寄送小幫手", layout="wide")
-load_dotenv(override=True)
+load_dotenv(".env.example", override=False)
+load_dotenv(".env", override=True)
 
 if "email_body" not in st.session_state:
     st.session_state.email_body = ""
@@ -44,17 +45,30 @@ GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"
 GEMINI_TIMEOUT_SECONDS = 20
 
 
-def get_secret(name):
-    try:
-        value = st.secrets.get(name)
-    except Exception:
-        value = None
+def get_secret(name, validator=None):
+    candidates = []
 
-    return str(value or os.getenv(name) or "").strip().strip('"').strip("'")
+    try:
+        candidates.append(st.secrets.get(name))
+    except Exception:
+        pass
+
+    candidates.append(os.getenv(name))
+
+    for value in candidates:
+        cleaned = str(value or "").strip().strip('"').strip("'")
+        if cleaned and (validator is None or validator(cleaned)):
+            return cleaned
+
+    return ""
+
+
+def is_gemini_api_key(value):
+    return value.startswith("AIza") and all(ord(ch) < 128 for ch in value)
 
 
 def generate_report_text(api_key, model_name, prompt, timeout_seconds):
-    if not api_key.startswith("AIza") or any(ord(ch) > 127 for ch in api_key):
+    if not is_gemini_api_key(api_key):
         raise RuntimeError("GEMINI_API_KEY 格式不正確，請確認 secrets 或 .env 是否填入真正的 API key")
 
     url = (
@@ -183,7 +197,7 @@ if st.button("查詢當日股價"):
 st.header("分析區")
 
 if st.button("生成分析報告"):
-    api_key = get_secret("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY", is_gemini_api_key)
 
     if not api_key:
         st.error("找不到 GEMINI_API_KEY，請先設定 .env 檔案")
