@@ -42,17 +42,31 @@ SYSTEM_PROMPT = """
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
 
+@st.cache_data(ttl=600)
 def get_tw_stock_data(code):
     symbols = [f"{code}.TW", f"{code}.TWO"]
+    errors = []
 
     for symbol in symbols:
-        stock = yf.Ticker(symbol)
-        data = stock.history(period="1d")
+        try:
+            stock = yf.Ticker(symbol)
+            data = stock.history(period="5d")
 
-        if not data.empty:
-            return symbol, stock.info.get("longName", symbol), data
+            if not data.empty:
+                try:
+                    name = stock.info.get("longName", symbol)
+                except Exception:
+                    name = symbol
 
-    return None, None, None
+                return symbol, name, data, None
+        except Exception as e:
+            errors.append(str(e))
+
+    error_text = "；".join(errors)
+    if "RateLimit" in error_text or "Too Many Requests" in error_text:
+        return None, None, None, "Yahoo Finance 暫時限制查詢次數，請等幾分鐘後再試"
+
+    return None, None, None, "查無資料，請確認股票代碼是否正確"
 
 
 def send_email(to_email, subject, body):
@@ -85,10 +99,10 @@ if st.button("查詢當日股價"):
     if not stock_code:
         st.warning("請先輸入台股代碼")
     else:
-        symbol, name, data = get_tw_stock_data(stock_code)
+        symbol, name, data, error_message = get_tw_stock_data(stock_code)
 
         if data is None:
-            st.error("查無資料，請確認股票代碼是否正確")
+            st.error(error_message)
         else:
             latest = data.iloc[-1]
             st.success(f"查詢成功：{name}（{symbol}）")
